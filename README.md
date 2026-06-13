@@ -110,7 +110,7 @@ xz-ulearning-helper/
 3. 将 `莞工小蟑螂-优学院全能助手.user.js` 的内容全部粘贴进去
 4. 保存（Ctrl+S）
 
-或从 [Greasy Fork](https://greasyfork.org/) 安装（如已发布）。
+或从 [Greasy Fork](https://greasyfork.org/) 安装（待发布）。
 
 ## 使用方法
 
