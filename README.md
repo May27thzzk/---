@@ -122,6 +122,7 @@ xz-ulearning-helper/
 4. 弹出章节选择界面，勾选需要导出的章节
 5. 点击「开始导出」，等待进度完成
 6. JSON 文件自动下载
+<img width="2550" height="1274" alt="image" src="https://github.com/user-attachments/assets/e6d294fc-ee6d-4de2-b9cb-eb9f54bce9dc" />
 
 ### 导出训练题库
 
@@ -129,6 +130,8 @@ xz-ulearning-helper/
 2. 点击浮动按钮打开面板
 3. 切换到「题库导出」，点击「开始导出训练题库」
 4. 等待导出完成，JSON 文件自动下载
+<img width="2550" height="1274" alt="image" src="https://github.com/user-attachments/assets/f6aadf5e-c2da-47e0-a828-38d3ccdab9c7" />
+![Uploading image.png…]()
 
 ### 自动刷课
 
