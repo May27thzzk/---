@@ -1,6 +1,7 @@
 // ==UserScript==
 // @name         莞工小蟑螂 - 优学院全能助手
-// @version      3.3.2
+// @namespace    https://greasyfork.org/users/1540778
+// @version      3.3.0
 // @description  优学院课件题库导出 + 训练题库导出 + 自动静音播放/答题/翻页，莞工小蟑螂出品
 // @author       莞工小蟑螂
 // @match        https://ua.dgut.edu.cn/*
@@ -18,7 +19,6 @@
 
   var HOST = location.hostname;
   var BASE = location.origin;
-  var API_HOST = HOST.includes('dgut.edu.cn') ? BASE : 'https://api.ulearning.cn';
   var IS_DGUT = HOST.includes('dgut.edu.cn');
   var IS_COURSE = HOST.startsWith('ua.');
   var IS_TRAINING = HOST.startsWith('lms.');
@@ -37,45 +37,26 @@
   // ==================== 认证 ====================
   var authHeaders={};
   var origFetch=window.fetch;
-  window.fetch=function(){var url=arguments[0],opts=arguments[1]||{};if(typeof url==='string'&&(url.indexOf('/uaapi/')!==-1||url.indexOf('/utestapi/')!==-1||url.indexOf('api.ulearning.cn')!==-1)&&opts.headers){var h=opts.headers;if(h instanceof Headers){h.forEach(function(v,k){if(/auth/i.test(k))authHeaders[k]=v;});}else if(typeof h==='object'){for(var k in h){if(/auth/i.test(k))authHeaders[k]=h[k];}}}return origFetch.apply(this,arguments);};
+  window.fetch=function(){var url=arguments[0],opts=arguments[1]||{};if(typeof url==='string'&&(url.indexOf('/uaapi/')!==-1||url.indexOf('/utestapi/')!==-1)&&opts.headers){var h=opts.headers;if(h instanceof Headers){h.forEach(function(v,k){if(/auth/i.test(k))authHeaders[k]=v;});}else if(typeof h==='object'){for(var k in h){if(/auth/i.test(k))authHeaders[k]=h[k];}}}return origFetch.apply(this,arguments);};
   function getHeaders(){var h={'Content-Type':'application/json'};for(var k in authHeaders)h[k]=authHeaders[k];var a=getCookie('AUTHORIZATION')||getCookie('token')||'';if(a&&!h['Authorization'])h['Authorization']=a.includes('.')?'Bearer '+a:a;var ua=getCookie('UA_AUTHORIZATION')||getCookie('ua-authorization')||'';if(ua&&!h['ua-authorization'])h['ua-authorization']=ua;return h;}
   async function api(method,path,body,retries){
     retries=retries||3;
-    var url=API_HOST+path;
-    console.log('[小蟑螂] API请求:',method,url);
-    
-    // 使用 GM_xmlhttpRequest 绕过 CORS
-    function gmRequest(opts){
-      return new Promise(function(resolve,reject){
-        GM_xmlhttpRequest({
-          method:opts.method||'GET',
-          url:opts.url,
-          headers:opts.headers||{},
-          data:opts.data||null,
-          onload:function(res){
-            console.log('[小蟑螂] GM响应:',res.status,opts.url);
-            if(res.status>=200&&res.status<300){
-              try{resolve(JSON.parse(res.responseText));}catch(e){reject(new Error('JSON解析失败'));}
-            }else{
-              reject(new Error('HTTP '+res.status));
-            }
-          },
-          onerror:function(e){reject(new Error('网络错误'));}
-        });
-      });
-    }
-    
-    var headers={'Content-Type':'application/json'};
-    var auth=getCookie('AUTHORIZATION')||getCookie('token')||'';
-    if(auth)headers['Authorization']=auth.includes('.')?'Bearer '+auth:auth;
-    
+    var url=BASE+path;
+    var opts={method:method,credentials:'include',headers:getHeaders()};
+    if(body)opts.body=JSON.stringify(body);
     for(var attempt=1;attempt<=retries;attempt++){
       try{
-        var data=await gmRequest({method:method,url:url,headers:headers,data:body?JSON.stringify(body):null});
-        console.log('[小蟑螂] 响应数据:',JSON.stringify(data).slice(0,200));
-        return data;
+        var res=await origFetch(url,opts);
+        if(res.status===401||res.status===403){
+          notify('登录已过期，请刷新页面后重新登录');
+          throw new Error('登录已过（HTTP '+res.status+'），请刷新页面');
+        }
+        if(!res.ok&&attempt<retries){
+          await wait(1000*attempt);
+          continue;
+        }
+        return res.json();
       }catch(e){
-        console.log('[小蟑螂] 请求异常:',e.message,'尝试:',attempt+'/'+retries);
         if(attempt>=retries)throw e;
         await wait(1000*attempt);
       }
@@ -89,36 +70,10 @@
   // ==================== 格式化 ====================
   function formatChoiceQ(t,o,a){var ans=a.replace(/\s*\|\s*/g,'').replace(/[^A-Za-z]/g,'').toUpperCase();return{'题型':'选择题','题干':t,'选项':o,'答案':ans||a,'解析':''};}
   function formatJudgeQ(t,a){var r='';if(/^(T|对|正确|true)/i.test(a))r='正确';else if(/^(F|错|错误|false)/i.test(a))r='错误';else r=a;return{'题型':'判断题','题干':t,'答案':r,'解析':''};}
-  function formatBlankQ(t,a){
-    var ans=a||'';
-    if(ans){
-      var answers=ans.split('|').map(function(s){return s.trim()}).filter(Boolean);
-      var idx=0;
-      t=t.replace(/\(\s*\)|_{2,}|【\s*】|\[\s*\]/g,function(){return '{'+(answers[idx++]||'___')+'}'});
-    }
-    return{'题型':'填空题','题干':t,'答案':ans,'解析':''};
-  }
+  function formatBlankQ(t){return{'题型':'填空题','题干':t,'解析':''};}
   function formatEssayQ(t,a){return{'题型':'问答题','题干':t,'答案':a,'解析':''};}
 
-  function formatCourseQ(q,ansData){
-    var type=q.type||0,title=html2text(q.title||''),choices=q.choiceitemModels||[],ansText=ansData?ansData.text||'':'';
-    if(ansData&&ansData.typeCode&&ansData.typeCode>0)type=ansData.typeCode;
-    // 先按题型判断
-    if(type===4)return formatJudgeQ(title,ansText);
-    if(type===6)return formatEssayQ(title,ansText);
-    if(type===5)return formatBlankQ(title,ansText);
-    // 有选项的是选择题
-    if(choices.length>=2){
-      var opts=choices.map(function(c,i){return(c.option||LABELS[i]||String(i))+'. '+html2text(c.title||'');});
-      return formatChoiceQ(title,opts,ansText);
-    }
-    // 检查是否是填空题（标题包含括号或下划线）
-    if(/\(\s*\)|_{2,}|【\s*】|\[\s*\]/.test(title)){
-      return formatBlankQ(title,ansText);
-    }
-    // 默认填空题
-    return formatBlankQ(title,ansText);
-  }
+  function formatCourseQ(q,ansData){var type=q.type||0,title=html2text(q.title||''),choices=q.choiceitemModels||[],ansText=ansData?ansData.text||'':'';if(ansData&&ansData.typeCode&&ansData.typeCode>0)type=ansData.typeCode;if(choices.length>=2){var opts=choices.map(function(c,i){return(c.option||LABELS[i]||String(i))+'. '+html2text(c.title||'');});return formatChoiceQ(title,opts,ansText);}if(type===4)return formatJudgeQ(title,ansText);if(type===6)return formatEssayQ(title,ansText);return formatBlankQ(title);}
 
   function detectTrainType(q){var items=Array.isArray(q.item)?q.item:[],answer=Array.isArray(q.userAnswer)?q.userAnswer:[];if(items.length===2){var t=items.map(function(it){return html2text(it&&it.title||'')}).join('');if(/正确|错误|对错/.test(t))return 4;}if(answer.length>0&&(typeof answer[0]==='boolean'||/^(true|false)$/i.test(String(answer[0]).trim())))return 4;if(q.type===3)return 4;if(items.length>=2){var c=items.filter(function(it){return it&&it.title&&html2text(it.title).length>0}).length;if(c>=2)return q.type||2;}return q.type||5;}
   function formatTrainQ(q){var type=detectTrainType(q),title=html2text(q.title),items=Array.isArray(q.item)?q.item:[],answer=Array.isArray(q.userAnswer)?q.userAnswer:[];if(type===1||type===2){var opts=items.map(function(it,i){return(LABELS[i]||i)+'. '+html2text(it&&it.title||'');});return formatChoiceQ(title,opts,answer.map(function(a){return String(a).toUpperCase()}).sort().join(''));}if(type===3||type===4){var raw=answer[0]||'';if(['A','正确','True','true','对'].indexOf(raw)!==-1)return formatJudgeQ(title,'正确');if(['B','错误','False','false','错'].indexOf(raw)!==-1)return formatJudgeQ(title,'错误');if(typeof raw==='boolean')return formatJudgeQ(title,raw?'正确':'错误');return formatJudgeQ(title,String(raw));}if(type===5){var t=title;answer.forEach(function(v){for(var pi=0,pats=[/_{2,}/,/\(\s*\)/,/【\s*】/,/\[\s*\]/];pi<pats.length;pi++){if(pats[pi].test(t)){t=t.replace(pats[pi],'{'+v+'}');break;}}});return formatBlankQ(t);}return formatEssayQ(title,answer.join('\n'));}
@@ -264,31 +219,12 @@
     var url=new URL(location.href);
     var courseId=url.searchParams.get('courseId')||url.searchParams.get('courseid');
     var classId=url.searchParams.get('classId')||url.searchParams.get('classid');
-    var isPreview=url.searchParams.get('isPreview')==='true';
-    if(!courseId)throw new Error('URL 缺少 courseId');
+    if(!courseId||!classId)throw new Error('URL 缺少 courseId/classId');
 
     setStatus('正在获取课程目录...');
-    console.log('[小蟑螂] 平台: '+(IS_DGUT?'DGUT':'标准优学院')+', courseId='+courseId+', classId='+(classId||'无')+', API_HOST='+API_HOST);
     var dirResp;
-    if(IS_DGUT){
-      console.log('[小蟑螂] 尝试DGUT API: /uaapi/course/stu/'+courseId+'/directory');
-      dirResp=await api('GET','/uaapi/course/stu/'+encodeURIComponent(courseId)+'/directory'+(classId?'?classId='+encodeURIComponent(classId):''));
-    }else{
-      // 旧版优学院 - 试听模式不需要登录
-      console.log('[小蟑螂] 尝试API: /course/all/'+courseId+'/directory');
-      try{
-        dirResp=await api('GET','/course/all/'+encodeURIComponent(courseId)+'/directory');
-        console.log('[小蟑螂] API 响应:',dirResp?JSON.stringify(dirResp).slice(0,200):'null');
-      }catch(e){
-        console.log('[小蟑螂] API 失败:',e.message,e.stack);
-      }
-      if(!dirResp||(!dirResp.success&&!dirResp.data&&!dirResp.chapters)){
-        console.log('[小蟑螂] 尝试API: /course/'+courseId+'/directory');
-        try{dirResp=await api('GET','/course/'+encodeURIComponent(courseId)+'/directory');}catch(e){console.log('[小蟑螂] API 失败:',e.message);}
-      }
-    }
-    console.log('[小蟑螂] 目录响应:',dirResp?JSON.stringify(dirResp).slice(0,500):'null');
-    if(!dirResp)throw new Error('获取课程目录失败，请查看控制台日志（F12→Console）');
+    if(IS_DGUT)dirResp=await api('GET','/uaapi/course/stu/'+encodeURIComponent(courseId)+'/directory?classId='+encodeURIComponent(classId));
+    else{dirResp=await api('POST','/api/v2/learnCourse/courseDirectory',{courseId:courseId,classId:classId});if(!dirResp||(!dirResp.success&&!dirResp.data))dirResp=await api('POST','/learnCourse/courseDirectory',{courseId:courseId,classId:classId});}
     var dirData=dirResp.data||dirResp;
     var courseName=dirData.coursename||dirData.courseName||'course_'+courseId;
     var chapters=[];
@@ -311,71 +247,48 @@
     }
     if(!chapters.length)throw new Error('课程目录为空');
 
-    setStatus('正在解析页面列表...');
-    // 从目录数据中直接提取页面（旧版优学院的目录API已经包含所有页面信息）
+    setStatus('正在获取页面列表...');
+    var fetchedNodeIds={};
     for(var ci=0;ci<chapters.length;ci++){
+      if(exportCancelled)throw new Error('用户取消导出');
       var ch=chapters[ci];
-      // 在目录数据中找到对应的章节
-      for(var di=0;di<(dirData.chapters||[]).length;di++){
-        var dirCh=dirData.chapters[di];
-        if(dirCh.nodeid===ch.nodeId){
-          // 遍历该章节的所有小节
-          for(var ii=0;ii<(dirCh.items||[]).length;ii++){
-            var item=dirCh.items[ii];
-            if(item.itemid===ch.itemId||item.id===ch.itemId){
-              // 提取该小节的所有页面
-              var pages=[];
-              for(var pi=0;pi<(item.coursepages||[]).length;pi++){
-                var cp=item.coursepages[pi];
-                pages.push({
-                  title:cp.title||'页面',
-                  contentType:cp.contentType||0,
-                  id:cp.id||cp.relationid,
-                  coursepageDTOList:[]
-                });
-              }
-              ch.pages=pages;
-              console.log('[小蟑螂] 小节 "'+ch.title+'" 有 '+pages.length+' 个页面');
-              break;
-            }
+      var chId=ch.nodeId;
+      if(!chId||fetchedNodeIds[chId])continue;
+      fetchedNodeIds[chId]=true;
+      setProgress(Math.round(ci/chapters.length*30),'获取章节数据 '+(ci+1)+'/'+chapters.length+'...');
+      var chResp;
+      if(IS_DGUT)chResp=await api('GET','/uaapi/wholepage/chapter/stu/'+encodeURIComponent(chId));
+      else{chResp=await api('POST','/api/v2/learnCourse/getWholeChapterPageContent',{nodeId:chId});if(!chResp||!chResp.data)chResp=await api('POST','/learnCourse/getWholeChapterPageContent',{nodeId:chId});}
+      var cd=chResp.data||chResp;
+      var items=cd.wholepageItemDTOList||cd.items||[];
+      for(var ii=0;ii<items.length;ii++){
+        var item=items[ii];
+        var wpList=item.wholepageDTOList||item.coursepages||[];
+        var sectionPages=[];
+        for(var wi=0;wi<wpList.length;wi++){
+          var wp=wpList[wi];
+          sectionPages.push({title:wp.content||wp.title||wp.name||'页面',contentType:wp.contentType||wp.type||0,id:wp.id||wp.relationid||wp.pageId,coursepageDTOList:wp.coursepageDTOList||wp.children||[]});
+        }
+        for(var ci2=0;ci2<chapters.length;ci2++){
+          if(chapters[ci2].nodeId===chId&&(chapters[ci2].itemId===item.itemid||chapters[ci2].itemId===item.id)){
+            chapters[ci2].pages=sectionPages;
+            break;
           }
-          break;
         }
       }
+      await wait(100);
     }
 
     var totalQuizPages=0;
     chapters.forEach(function(ch){
       var qPages=ch.pages.filter(function(p){return p.contentType===7});
       totalQuizPages+=qPages.length;
-    });
-    console.log('[小蟑螂] 共找到 '+totalQuizPages+' 个练习页面');
-    if(!totalQuizPages)throw new Error('课程中没有找到练习页面');
-
-    // 获取每个练习页面的题目数据
-    setStatus('正在获取题目数据...');
-    var fetchedPages={};
-    for(var ci=0;ci<chapters.length;ci++){
-      var ch=chapters[ci];
-      for(var pi=0;pi<ch.pages.length;pi++){
-        var pg=ch.pages[pi];
-        if(pg.contentType!==7||!pg.id||fetchedPages[pg.id])continue;
-        fetchedPages[pg.id]=true;
-        console.log('[小蟑螂] 获取页面题目: '+pg.title+' (id:'+pg.id+')');
-        try{
-          var pageResp=await api('GET','/wholepage/all/'+encodeURIComponent(pg.id));
-          if(pageResp&&pageResp.coursepageDTOList){
-            pg.coursepageDTOList=pageResp.coursepageDTOList;
-            var qCount=0;
-            pageResp.coursepageDTOList.forEach(function(cp){qCount+=getQs(cp).length;});
-            console.log('[小蟑螂] 页面 "'+pg.title+'" 有 '+qCount+' 道题');
-          }
-        }catch(e){
-          console.log('[小蟑螂] 获取页面失败:',pg.title,e.message);
-        }
-        await wait(100);
+      if(qPages.length){
+        var qCount=0;qPages.forEach(function(p){(p.coursepageDTOList||[]).forEach(function(cp){qCount+=getQs(cp).length;});});
+        console.log('[小蟑螂] '+ch.title+': '+qPages.length+' 个练习页, '+qCount+' 道题');
       }
-    }
+    });
+    if(!totalQuizPages)throw new Error('课程中没有找到练习页面');
 
     setStatus('请选择要导出的课件...');
     var selected;
@@ -429,18 +342,9 @@
         for(var retry=0;retry<2;retry++){
           try{
             var aResp;
-            if(IS_DGUT){
-              aResp=await api('GET','/uaapi/questionAnswer/'+encodeURIComponent(qid)+'?parentId='+encodeURIComponent(task.parentId));
-            }else{
-              // 旧版优学院 - 使用 /questionAnswer/ 路径
-              aResp=await api('GET','/questionAnswer/'+encodeURIComponent(qid)+'?parentId='+encodeURIComponent(task.parentId));
-            }
-            if(aResp&&aResp.correctAnswerList){
-              ansData={text:aResp.correctAnswerList.join(' | '),values:aResp.correctAnswerList,typeCode:q.type};
-              if(i<3)console.log('[小蟑螂] 题'+(i+1)+' 答案:',ansData.text);
-            }else{
-              if(i<3)console.log('[小蟑螂] 题'+(i+1)+' 无答案数据:',JSON.stringify(aResp).slice(0,100));
-            }
+            if(IS_DGUT)aResp=await api('GET','/uaapi/questionAnswer/'+encodeURIComponent(qid)+'?parentId='+encodeURIComponent(task.parentId));
+            else{aResp=await api('POST','/api/v2/learnQuestion/getQuestionAnswer',{questionId:qid,parentId:task.parentId});if(!aResp||!aResp.data)aResp=await api('POST','/learnQuestion/getQuestionAnswer',{questionId:qid,parentId:task.parentId});}
+            ansData=parseAnswer(aResp);
             break;
           }catch(e){
             if(retry===0)await wait(300);
@@ -1110,7 +1014,7 @@
       '  <div class="brand">',
       '    <img class="logo" src="'+LOGO_URI+'" alt="小蟑螂">',
       '    <div class="name">莞工小蟑螂</div>',
-      '    <div class="ver">优学院全能助手 · v3.3.2</div>',
+      '    <div class="ver">优学院全能助手 · v3.3</div>',
       '  </div>',
       '  <div class="tabs">',
       showTabs.map(function(t,i){
@@ -1601,12 +1505,12 @@
     try {
       if (document.getElementById('xz-panel')) return;
       createUI();
-      console.log('[莞工小蟑螂] v3.3.2 已加载');
+      console.log('[莞工小蟑螂] v3.3 已加载');
       var lastVer='';
       try{lastVer=localStorage.getItem('xz_last_ver')||'';}catch(e){}
-      if(lastVer!=='3.3.2'){
-        try{localStorage.setItem('xz_last_ver','3.3.2');}catch(e){}
-        notify('莞工小蟑螂 v3.3.2 已更新：支持旧版优学院、填空题答案修复');
+      if(lastVer!=='3.3'){
+        try{localStorage.setItem('xz_last_ver','3.3');}catch(e){}
+        notify('莞工小蟑螂 v3.3 已更新：并发导出、拖动面板、暗色模式、品牌Logo');
       }
     } catch (e) { console.error('[莞工小蟑螂]', e); }
   }
